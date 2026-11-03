@@ -44,7 +44,7 @@ export function requireSession(ctx: ServiceContext) {
       res.on('finish', () => {
         logger.info('request', {
           method: req.method,
-          path: req.route?.path ? `${req.baseUrl}${req.route.path}` : req.path,
+          path: req.originalUrl ? req.originalUrl.split('?')[0] : req.path,
           status: res.statusCode,
           ms: Number((process.hrtime.bigint() - start) / 1_000_000n),
         });
@@ -54,8 +54,15 @@ export function requireSession(ctx: ServiceContext) {
   }
 
   export function errorHandler(logger: Logger) {
-    return (err: unknown, _req: Request, res: Response, _next: NextFunction) => {
+    return (err: unknown, req: Request, res: Response, _next: NextFunction) => {
       if (err instanceof BankException) {
+        logger.warn('bank exception', {
+          path: req.originalUrl ? req.originalUrl.split('?')[0] : req.path,
+          status: err.status,
+          code: err.code,
+          message: err.message,
+          ...(err.details ? { details: err.details } : {}),
+        });
         res.status(err.status).json({ error: { code: err.code, message: err.message, ...(err.details ? { details: err.details } : {}) } });
         return;
       }

@@ -18,9 +18,11 @@ import type { ServiceContext } from './services/context.ts';
 export function createApp(ctx: ServiceContext): Express {
   const app = express();
   app.disable('x-powered-by');
-  if (ctx.config.trustProxy) {
-    const tp = ctx.config.trustProxy;
-    app.set('trust proxy', /^\d+$/.test(tp) ? Number(tp) : tp === 'true' ? true : tp);
+  const tp = ctx.config.trustProxy;
+  if (tp) {
+    app.set('trust proxy', /^\d+$/.test(tp) ? Number(tp) : tp === 'true' ? 1 : tp);
+  } else {
+    app.set('trust proxy', 1);
   }
 
   app.use(helmet({ contentSecurityPolicy: false }));
@@ -32,6 +34,10 @@ export function createApp(ctx: ServiceContext): Express {
       limit: ctx.config.env === 'test' ? 100_000 : 300,
       standardHeaders: 'draft-8',
       legacyHeaders: false,
+      validate: {
+        trustProxy: false,
+        xForwardedForHeader: false,
+      },
       message: { error: { code: BankError.RATE_LIMITED, message: 'too many requests' } },
     }),
   );

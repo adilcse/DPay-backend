@@ -11,8 +11,8 @@ export class ConsoleSmsSender implements SmsSender {
   constructor(logger: Logger) {
     this.logger = logger;
   }
-  async sendOtp(phone: string): Promise<void> {
-    this.logger.info('otp sent (console provider)', { phone: maskPhone(phone) });
+  async sendOtp(phone: string, code: string): Promise<void> {
+    this.logger.info('otp sent (console provider)', { phone: maskPhone(phone), code });
   }
 }
 

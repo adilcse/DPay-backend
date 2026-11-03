@@ -77,6 +77,15 @@ describe('auth & profile', () => {
       assert.equal(otp.body.debugCode, undefined);
       assert.equal(quiet.sms.get('9876543210')?.length, 6);
     });
+
+    it('accepts requests with X-Forwarded-For header without throwing rate limit error', async () => {
+      const res = await bank.request('POST', '/v1/auth/otp', {
+        body: { phone: '9123456789' },
+        headers: { 'x-forwarded-for': '10.0.2.2, 127.0.0.1' },
+      });
+      assert.equal(res.status, 200);
+      assert.equal(res.body.phone, '9123456789');
+    });
   });
 
   describe('wallet, notes & leases', () => {
@@ -107,6 +116,15 @@ describe('auth & profile', () => {
       const lease = await asha.refreshLease();
       assert.equal(lease.body.sequence, 2);
       assert.equal(lease.body.outstandingNoteIds.length, 11);
+    });
+
+    it('accepts change-heavy plans used by the Android client', async () => {
+      // Android client defaults to changeHeavy = true (12 notes for ₹500)
+      const changeHeavy = planDenominations(500_00, true);
+      assert.equal(changeHeavy.length, 12);
+      const res = await asha.load(changeHeavy);
+      assert.equal(res.status, 201);
+      assert.equal(res.body.noteCertificates.length, 12);
     });
 
     it('rejects wrong denominations, the ₹5,000 cap and insufficient balance', async () => {

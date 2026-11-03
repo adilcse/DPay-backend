@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import * as cbor from '../src/protocol/cbor.ts';
 import { CborError } from '../src/protocol/cbor.ts';
-import { planDenominations } from '../src/protocol/denominations.ts';
+import { isValidDenominationPlan, planDenominations } from '../src/protocol/denominations.ts';
 import { isValidLocalPart, suggestHandle } from '../src/protocol/handles.ts';
 import { Issuer } from '../src/protocol/issuer.ts';
 import { NoteCertificate, ProtocolError, WalletCertificate, WalletLease } from '../src/protocol/messages.ts';
@@ -105,11 +105,19 @@ describe('issuer', () => {
 });
 
 describe('denominations (DenominationPlanner port)', () => {
-  it('plans ₹5,000 as 15 notes', () => {
-    const plan = planDenominations(5_000_00);
-    assert.equal(plan.length, 15);
-    assert.equal(plan.reduce((a, b) => a + b, 0), 5_000_00);
-    assert.deepEqual(plan, [...plan].sort((a, b) => b - a));
+  it('plans ₹5,000 as 15 notes (minimal) and 16 notes (change-heavy)', () => {
+    const minimal = planDenominations(5_000_00, false);
+    assert.equal(minimal.length, 15);
+    assert.equal(minimal.reduce((a, b) => a + b, 0), 5_000_00);
+    assert.deepEqual(minimal, [...minimal].sort((a, b) => b - a));
+
+    const changeHeavy = planDenominations(5_000_00, true);
+    assert.equal(changeHeavy.length, 16);
+    assert.equal(changeHeavy.reduce((a, b) => a + b, 0), 5_000_00);
+    assert.deepEqual(changeHeavy, [...changeHeavy].sort((a, b) => b - a));
+
+    assert.equal(isValidDenominationPlan(minimal, 5_000_00), true);
+    assert.equal(isValidDenominationPlan(changeHeavy, 5_000_00), true);
   });
 
   it('makes every whole-rupee amount payable exactly', () => {

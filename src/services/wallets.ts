@@ -2,7 +2,7 @@ import { AttestationError, type AttestationResult } from '../attestation/verifie
 import { integrityRequestHash, type IntegrityTier } from '../attestation/playIntegrity.ts';
 import { BankError, BankException } from '../domain/errors.ts';
 import { Limits } from '../domain/limits.ts';
-import { planDenominations } from '../protocol/denominations.ts';
+import { isValidDenominationPlan, planDenominations } from '../protocol/denominations.ts';
 import { ProtocolConstants } from '../protocol/messages.ts';
 import * as P256 from '../protocol/p256.ts';
 import { requireAccount, type AccountRow } from './accounts.ts';
@@ -239,20 +239,13 @@ export async function issueNotes(
                     ) {
                     const { account } = await requireActiveWallet(ctx, session);
                     const total = values.reduce((a, b) => a + b, 0);
-                    let plan: number[] = [];
-                    try {
-                      plan = planDenominations(total);
-                    } catch {
-                      throw new BankException(BankError.INVALID_DENOMINATIONS);
-                    }
                     if (
                       values.length === 0 ||
                       values.length > Limits.MAX_NOTES_PER_LOAD ||
                       values.length !== keys.length ||
-                      plan.length !== values.length ||
-                      plan.some((v, i) => v !== values[i])
+                      !isValidDenominationPlan(values, total)
                     ) {
-                      throw new BankException(BankError.INVALID_DENOMINATIONS);
+                      throw new BankException(BankError.INVALID_DENOMINATIONS, 'note denominations do not match expected plan');
                     }
                     keys.forEach((k) => validateKey(k.publicKey));
                     if (new Set(keys.map((k) => hex(k.publicKey))).size !== keys.length) {

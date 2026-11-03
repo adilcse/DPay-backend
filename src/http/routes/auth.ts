@@ -16,6 +16,10 @@ export function authRoutes(ctx: ServiceContext): Router {
     limit: ctx.config.env === 'test' ? 10_000 : 30,
     standardHeaders: 'draft-8',
     legacyHeaders: false,
+    validate: {
+      trustProxy: false,
+      xForwardedForHeader: false,
+    },
     message: { error: { code: 'RATE_LIMITED', message: 'too many requests' } },
   });
 
