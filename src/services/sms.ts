@@ -1,5 +1,6 @@
 import type { Config } from '../config.ts';
 import { maskPhone, type Logger } from '../lib/logger.ts';
+import { WhatsAppService } from './whatsapp.ts';
 
 export interface SmsSender {
   sendOtp(phone: string, code: string): Promise<void>;
@@ -13,6 +14,31 @@ export class ConsoleSmsSender implements SmsSender {
   }
   async sendOtp(phone: string, code: string): Promise<void> {
     this.logger.info('otp sent (console provider)', { phone: maskPhone(phone), code });
+  }
+}
+
+/** Sends OTP via WhatsApp Cloud API template message. */
+export class WhatsAppSmsSender implements SmsSender {
+  private readonly whatsapp: WhatsAppService;
+  private readonly logger: Logger;
+  private readonly templateName: string;
+
+  constructor(whatsapp: WhatsAppService, logger: Logger, templateName: string = 'app_otp') {
+    this.whatsapp = whatsapp;
+    this.logger = logger;
+    this.templateName = templateName;
+  }
+
+  async sendOtp(phone: string, code: string): Promise<void> {
+    const res = await this.whatsapp.sendOTP(phone, code, this.templateName);
+    if (!res.success) {
+      this.logger.error('failed to send whatsapp otp', { phone: maskPhone(phone), error: res.error });
+      throw new Error(res.error || 'WhatsApp OTP delivery failed');
+    }
+    this.logger.info('otp sent (whatsapp provider)', {
+      phone: maskPhone(phone),
+      messageId: res.messageId,
+    });
   }
 }
 
@@ -39,6 +65,10 @@ export class WebhookSmsSender implements SmsSender {
 }
 
 export function createSmsSender(config: Config, logger: Logger): SmsSender {
+  if (config.sms.provider === 'whatsapp') {
+    const service = new WhatsAppService(config.sms.whatsapp, logger);
+    return new WhatsAppSmsSender(service, logger, config.sms.whatsapp?.otpTemplate);
+  }
   return config.sms.provider === 'webhook'
     ? new WebhookSmsSender(config.sms.webhookUrl!, config.sms.webhookToken)
     : new ConsoleSmsSender(logger);

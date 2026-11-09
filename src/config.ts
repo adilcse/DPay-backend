@@ -41,9 +41,17 @@ const EnvSchema = z.object({
   OTP_SECRET: z.string().min(32).optional(),
   /** Return the OTP in the response (`debugCode`), like the app's FakeBank. Never in production. */
   EXPOSE_DEBUG_OTP: bool.optional(),
-  SMS_PROVIDER: z.enum(['console', 'webhook']).default('console'),
+  SMS_PROVIDER: z.enum(['console', 'webhook', 'whatsapp']).optional(),
   SMS_WEBHOOK_URL: z.url().optional(),
   SMS_WEBHOOK_TOKEN: z.string().optional(),
+
+  WHATSAPP_ACCESS_TOKEN: z.string().optional(),
+  WHATSAPP_PHONE_NUMBER_ID: z.string().optional(),
+  WHATSAPP_BUSINESS_ACCOUNT_ID: z.string().optional(),
+  WHATSAPP_API_VERSION: z.string().default('v22.0'),
+  WHATSAPP_OTP_TEMPLATE: z.string().default('app_otp'),
+  WHATSAPP_NOTIFY_NUMBER: z.string().optional(),
+  WHATSAPP_REQUEST_TIMEOUT_MS: z.coerce.number().int().default(10000),
 
   SESSION_TTL_DAYS: z.coerce.number().int().min(1).max(365).default(30),
   /** Demo online balance credited to new accounts (paise). Default ₹25,000 outside production. */
@@ -87,7 +95,20 @@ export interface Config {
   readonly issuerKeyId: number;
   readonly otpSecret: string;
   readonly exposeDebugOtp: boolean;
-  readonly sms: { provider: 'console' | 'webhook'; webhookUrl: string | undefined; webhookToken: string | undefined };
+  readonly sms: {
+    readonly provider: 'console' | 'webhook' | 'whatsapp';
+    readonly webhookUrl: string | undefined;
+    readonly webhookToken: string | undefined;
+    readonly whatsapp?: {
+      readonly accessToken: string;
+      readonly phoneNumberId: string;
+      readonly businessAccountId?: string;
+      readonly apiVersion: string;
+      readonly otpTemplate: string;
+      readonly notifyNumber?: string;
+      readonly timeoutMs: number;
+    };
+  };
   readonly sessionTtlSeconds: number;
   readonly startingBalancePaise: number;
   readonly attestation: {
@@ -155,7 +176,20 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     issuerKeyId: e.ISSUER_KEY_ID,
     otpSecret: e.OTP_SECRET ?? (production ? '' : 'dev-only-otp-secret-not-for-production-use'),
     exposeDebugOtp: e.EXPOSE_DEBUG_OTP ?? !production,
-    sms: { provider: e.SMS_PROVIDER, webhookUrl: e.SMS_WEBHOOK_URL, webhookToken: e.SMS_WEBHOOK_TOKEN },
+    sms: {
+      provider: e.SMS_PROVIDER ?? (e.WHATSAPP_ACCESS_TOKEN && e.WHATSAPP_PHONE_NUMBER_ID ? 'whatsapp' : 'console'),
+      webhookUrl: e.SMS_WEBHOOK_URL,
+      webhookToken: e.SMS_WEBHOOK_TOKEN,
+      whatsapp: {
+        accessToken: e.WHATSAPP_ACCESS_TOKEN ?? '',
+        phoneNumberId: e.WHATSAPP_PHONE_NUMBER_ID ?? '',
+        businessAccountId: e.WHATSAPP_BUSINESS_ACCOUNT_ID,
+        apiVersion: e.WHATSAPP_API_VERSION,
+        otpTemplate: e.WHATSAPP_OTP_TEMPLATE,
+        notifyNumber: e.WHATSAPP_NOTIFY_NUMBER,
+        timeoutMs: e.WHATSAPP_REQUEST_TIMEOUT_MS,
+      },
+    },
     sessionTtlSeconds: e.SESSION_TTL_DAYS * DAY,
     startingBalancePaise: e.STARTING_BALANCE_PAISE ?? (production ? 0 : 25_000_00),
     attestation: {
@@ -184,6 +218,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     problems.push('PLAY_INTEGRITY_SERVICE_ACCOUNT_FILE is required when PLAY_INTEGRITY_MODE=enforce');
   }
   if (config.sms.provider === 'webhook' && !config.sms.webhookUrl) problems.push('SMS_WEBHOOK_URL is required for SMS_PROVIDER=webhook');
+  if (config.sms.provider === 'whatsapp' && (!config.sms.whatsapp?.accessToken || !config.sms.whatsapp?.phoneNumberId)) {
+    problems.push('WHATSAPP_ACCESS_TOKEN and WHATSAPP_PHONE_NUMBER_ID are required for SMS_PROVIDER=whatsapp');
+  }
   if (production) {
     if (!config.issuerKeyFile) problems.push('ISSUER_KEY_FILE is required in production (the demo issuer key is public)');
     if (!e.OTP_SECRET) problems.push('OTP_SECRET is required in production');
