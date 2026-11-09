@@ -33,11 +33,18 @@ export type LedgerKind = (typeof LedgerKind)[keyof typeof LedgerKind];
     now: number,
   ): Promise<number> {
     if (!Number.isSafeInteger(amountPaise) || amountPaise === 0) throw new Error('ledger amount must be a non-zero integer');
-    const row = await db.get<{ online_balance_paise: number }>('SELECT online_balance_paise FROM accounts WHERE id = ?', accountId);
+    const row = await db.get<{ online_balance_paise: number }>('SELECT online_balance_paise FROM accounts WHERE id = ? FOR UPDATE', accountId);
     if (!row) throw new Error('unknown account');
     const balance = row.online_balance_paise + amountPaise;
     if (balance < 0) throw new Error('ledger would overdraw the account');
-      await db.run('UPDATE accounts SET online_balance_paise = ?, updated_at = ? WHERE id = ?', balance, now, accountId);
+    const res = await db.run(
+      'UPDATE accounts SET online_balance_paise = ?, updated_at = ? WHERE id = ? AND online_balance_paise + ? >= 0',
+      balance,
+      now,
+      accountId,
+      amountPaise,
+    );
+    if (res.changes !== 1) throw new Error('ledger balance update failed or would overdraw the account');
     await db.run(
       'INSERT INTO ledger_entries (account_id, kind, amount_paise, balance_after_paise, reference, created_at) VALUES (?, ?, ?, ?, ?, ?)',
       accountId,

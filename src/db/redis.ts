@@ -170,8 +170,9 @@ export class RedisService {
     try {
       const res = await this.client.set(lockKey, token, 'PX', ttlMs, 'NX');
       acquired = res === 'OK';
-    } catch {
-      acquired = true; // graceful degradation if Redis unavailable
+    } catch (e) {
+      this.logger.error('failed to acquire lock due to redis error', { resource, error: String(e) });
+      acquired = false; // fail-closed for financial integrity
     }
 
     if (!acquired) {
@@ -182,12 +183,16 @@ export class RedisService {
       return await fn();
     } finally {
       try {
-        const current = await this.client.get(lockKey);
-        if (current === token) {
-          await this.client.del(lockKey);
-        }
-      } catch {
-        // ignore unlock error
+        const unlockScript = `
+          if redis.call("get", KEYS[1]) == ARGV[1] then
+            return redis.call("del", KEYS[1])
+          else
+            return 0
+          end
+        `;
+        await this.client.eval(unlockScript, 1, lockKey, token);
+      } catch (e) {
+        this.logger.warn('redis unlock error', { resource, error: String(e) });
       }
     }
   }

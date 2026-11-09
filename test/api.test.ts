@@ -340,6 +340,52 @@ describe('auth & profile', () => {
       const res = await ravi.call('POST', '/v1/settlement', { received: [{ payment: b64(payment), receivedAt: T0 + 60 }] });
       assert.equal(res.body.rejections[0].code, 'NOTE_REFUNDED');
     });
+
+    it('handles concurrent settlement of the same payment without false double spend or duplicate credit', async () => {
+      const payment = asha.pay(ravi.paymentRequest(), 95_00, [100_00]);
+      const id = b64(paymentIdOf(payment));
+      const ashaBefore = await balance(asha);
+      const raviBefore = await balance(ravi);
+
+      // Both payer and receiver upload the same payment concurrently
+      const [pRes, rRes] = await Promise.all([
+        asha.call('POST', '/v1/settlement', { sent: [b64(payment)], received: [] }),
+        ravi.call('POST', '/v1/settlement', { sent: [], received: [{ payment: b64(payment), receivedAt: bank.ctx.clock() }] }),
+      ]);
+
+      assert.equal(pRes.status, 200);
+      assert.equal(rRes.status, 200);
+      assert.deepEqual(pRes.body.settledSent, [id]);
+      assert.deepEqual(rRes.body.settledReceived, [id]);
+      assert.equal(pRes.body.rejections.length, 0);
+      assert.equal(rRes.body.rejections.length, 0);
+
+      // Asha's wallet must NOT be frozen as a false double spend
+      const lease = await asha.refreshLease();
+      assert.equal(lease.status, 200);
+
+      // Balances must be credited and refunded exactly once
+      assert.equal(await balance(ravi), raviBefore + 95_00);
+      assert.equal(await balance(asha), ashaBefore + 5_00);
+    });
+
+    it('prevents duplicate refund on concurrent lease refreshes with expired notes', async () => {
+      const ashaBefore = await balance(asha);
+      // Advance past note expiry + grace
+      bank.advance(21 * DAY + 1);
+
+      // Concurrently trigger lease refresh / account queries that invoke refundExpiredNotes
+      const [r1, r2] = await Promise.all([
+        asha.call('POST', '/v1/wallet/lease'),
+        asha.call('GET', '/v1/account'),
+      ]);
+
+      assert.equal(r1.status, 200);
+      assert.equal(r2.status, 200);
+
+      // Asha loaded ₹500 before. Since notes expired unspent, she gets exactly ₹500 refunded once
+      assert.equal(await balance(asha), ashaBefore + 500_00);
+    });
   });
 
   describe('admin', () => {

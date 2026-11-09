@@ -170,8 +170,11 @@ const reject = (paymentId: Buffer | null, code: SettlementRejection, reason?: st
 
     // Already settled (by either side)? Re-uploads are idempotent.
     const existing = await ctx.db.get<PaymentRow>('SELECT * FROM payments WHERE payment_id = ?', hex(paymentId));
-    if (existing && existing.body_hash === bodyHash) {
-      return { ok: true, paymentId, creditedToUploader: 0, refundedToUploader: 0 };
+    if (existing) {
+      if (existing.body_hash === bodyHash) {
+        return { ok: true, paymentId, creditedToUploader: 0, refundedToUploader: 0 };
+      }
+      return reject(paymentId, SettlementRejection.PAYMENT_ID_CONFLICT);
     }
 
     try {
@@ -206,22 +209,43 @@ const reject = (paymentId: Buffer | null, code: SettlementRejection, reason?: st
     }
 
       return await ctx.db.transaction(async (): Promise<Outcome> => {
-        // Re-check inside the transaction (concurrent upload by the other side).
-        const again = await ctx.db.get<PaymentRow>('SELECT * FROM payments WHERE payment_id = ?', hex(paymentId));
-        if (again && again.body_hash === bodyHash) return { ok: true, paymentId, creditedToUploader: 0, refundedToUploader: 0 };
+        // Deterministically sort note IDs before acquiring row locks to eliminate deadlock risk across concurrent settlements
+        const noteSpecs = verified.noteIds
+          .map((id, i) => ({
+            id,
+            noteIdHex: hex(id),
+            expectedValue: verified.noteValues[i]!,
+          }))
+          .sort((a, b) => a.noteIdHex.localeCompare(b.noteIdHex));
 
         const notes: NoteRow[] = [];
         const conflicts: NoteRow[] = [];
-        for (let i = 0; i < verified.noteIds.length; i++) {
-          const note = await ctx.db.get<NoteRow>('SELECT * FROM notes WHERE note_id = ?', hex(verified.noteIds[i]!));
-          if (!note || note.wallet_id !== payerWallet.wallet_id || note.value_paise !== verified.noteValues[i]) {
+        for (const item of noteSpecs) {
+          const note = await ctx.db.get<NoteRow>('SELECT * FROM notes WHERE note_id = ? FOR UPDATE', item.noteIdHex);
+          if (!note || note.wallet_id !== payerWallet.wallet_id || note.value_paise !== item.expectedValue) {
             // Valid issuer signature on a note we have no record of: the issuer key or our DB is compromised.
-            await recordFraud(ctx, 'UNKNOWN_NOTE', payerWallet.wallet_id, hex(verified.noteIds[i]!), null, hex(paymentId), now);
+            await recordFraud(ctx, 'UNKNOWN_NOTE', payerWallet.wallet_id, item.noteIdHex, null, hex(paymentId), now);
             return reject(paymentId, SettlementRejection.UNKNOWN_NOTE);
           }
           if (note.status === 'REFUNDED') return reject(paymentId, SettlementRejection.NOTE_REFUNDED);
-          if (note.status === 'SPENT') conflicts.push(note);
+          if (note.status === 'SPENT') {
+            // If the note was already spent by THIS payment, it's not a double-spend conflict;
+            // it was settled concurrently by another thread / counterparty.
+            if (note.payment_id !== hex(paymentId)) {
+              conflicts.push(note);
+            }
+          }
           notes.push(note);
+        }
+
+        // Re-check payment status inside transaction after locking all notes.
+        // If another concurrent upload committed while we were waiting for note locks, return idempotently.
+        const again = await ctx.db.get<PaymentRow>('SELECT * FROM payments WHERE payment_id = ?', hex(paymentId));
+        if (again) {
+          if (again.body_hash === bodyHash) {
+            return { ok: true, paymentId, creditedToUploader: 0, refundedToUploader: 0 };
+          }
+          return reject(paymentId, SettlementRejection.PAYMENT_ID_CONFLICT);
         }
 
         if (conflicts.length > 0) {
@@ -230,7 +254,7 @@ const reject = (paymentId: Buffer | null, code: SettlementRejection, reason?: st
           for (const c of conflicts) {
             await recordFraud(ctx, 'DOUBLE_SPEND', payerWallet.wallet_id, c.note_id, c.payment_id, hex(paymentId), now);
           }
-            await ctx.db.run('UPDATE wallets SET frozen = 1 WHERE wallet_id = ?', payerWallet.wallet_id);
+          await ctx.db.run('UPDATE wallets SET frozen = 1 WHERE wallet_id = ?', payerWallet.wallet_id);
           await ctx.db.run('UPDATE accounts SET frozen = 1, updated_at = ? WHERE id = ?', now, payerWallet.account_id);
           await ctx.db.run(
             'INSERT OR IGNORE INTO blocked_wallets (wallet_id, reason, created_at) VALUES (?, ?, ?)',
@@ -242,18 +266,24 @@ const reject = (paymentId: Buffer | null, code: SettlementRejection, reason?: st
           await ctx.redis.addToBlocklist(payerWallet.wallet_id);
 
           ctx.logger.error('double spend detected', { payerWalletId: payerWallet.wallet_id, paymentId: hex(paymentId) });
-          if (!ctx.config.guaranteeOfflinePayments || again) {
+          if (!ctx.config.guaranteeOfflinePayments) {
             return reject(paymentId, SettlementRejection.DOUBLE_SPEND);
           }
-        } else if (again) {
-          return reject(paymentId, SettlementRejection.PAYMENT_ID_CONFLICT);
         }
 
         // Settle: close the notes, credit the receiver, refund change to the payer.
         const guaranteed = conflicts.length > 0;
         for (const note of notes) {
           if (note.status === 'OUTSTANDING') {
-            await ctx.db.run(`UPDATE notes SET status = 'SPENT', payment_id = ?, closed_at = ? WHERE note_id = ?`, hex(paymentId), now, note.note_id);
+            const res = await ctx.db.run(
+              `UPDATE notes SET status = 'SPENT', payment_id = ?, closed_at = ? WHERE note_id = ? AND status = 'OUTSTANDING'`,
+              hex(paymentId),
+              now,
+              note.note_id,
+            );
+            if (res.changes !== 1) {
+              return reject(paymentId, SettlementRejection.DOUBLE_SPEND, 'note state modified concurrently');
+            }
           }
         }
         // A guaranteed double spend refunds no change to the (frozen) payer.

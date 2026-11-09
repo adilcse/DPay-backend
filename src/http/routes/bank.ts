@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { z } from 'zod';
+import { BankError, BankException } from '../../domain/errors.ts';
 import type { ServiceContext } from '../../services/context.ts';
 import * as mockBank from '../../services/mockBank.ts';
 import { requireSession, sessionOf } from '../middleware.ts';
@@ -26,6 +27,9 @@ export function bankRoutes(ctx: ServiceContext): Router {
 
   /** Load money from mock bank into DPay online balance (Infinite Money). */
   router.post('/load', async (req, res) => {
+    if (!ctx.config.mockBank.infiniteMoney) {
+      throw new BankException(BankError.FORBIDDEN, 'mock bank loading is disabled in this environment');
+    }
     const body = parse(LoadMoneySchema, req.body);
     res.json(toWire(await mockBank.loadMoney(ctx, sessionOf(res), body.amountPaise, body.reference)));
   });

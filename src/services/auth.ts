@@ -118,7 +118,7 @@ export async function requestOtp(ctx: ServiceContext, phone: string): Promise<Ot
       phone,
       expiresAt: issued.expiresAt,
       resendAvailableAt: issued.resendAt,
-      ...(ctx.config.exposeDebugOtp ? { debugCode: code } : {}),
+      ...(ctx.config.exposeDebugOtp && ctx.config.env !== 'production' ? { debugCode: code } : {}),
     };
   }
 

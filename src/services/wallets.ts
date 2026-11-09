@@ -374,19 +374,34 @@ export async function issueNotes(
  * biometric re-enrollment, device loss, or left on a retired wallet). Returns the amount refunded
  * to [accountId] (or to everyone when omitted). Must run inside a transaction.
  */
-                              export async function refundExpiredNotes(ctx: ServiceContext, now: number, accountId?: string): Promise<number> {
-                                const cutoff = now - ctx.config.settlementGraceSeconds;
-                                const notes = accountId
-    ?await ctx.db.all<NoteRow>(`SELECT * FROM notes WHERE status = 'OUTSTANDING' AND not_after <= ? AND account_id = ?`, cutoff, accountId)
-    : await ctx.db.all<NoteRow>(`SELECT * FROM notes WHERE status = 'OUTSTANDING' AND not_after <= ?`, cutoff);
-                                let refunded = 0;
-                                for (const note of notes) {
-                                  await ctx.db.run(`UPDATE notes SET status = 'REFUNDED', closed_at = ? WHERE note_id = ?`, now, note.note_id);
-                                  await postLedger(ctx.db, note.account_id, LedgerKind.NOTE_EXPIRY_REFUND, note.value_paise, `note:${note.note_id}`, now);
-                                  refunded += note.value_paise;
-                                }
-                                return refunded;
-                              }
+export async function refundExpiredNotes(ctx: ServiceContext, now: number, accountId?: string): Promise<number> {
+  const cutoff = now - ctx.config.settlementGraceSeconds;
+  return await ctx.db.transaction(async () => {
+    const notes = accountId
+      ? await ctx.db.all<NoteRow>(
+          `SELECT * FROM notes WHERE status = 'OUTSTANDING' AND not_after <= ? AND account_id = ? ORDER BY note_id FOR UPDATE`,
+          cutoff,
+          accountId,
+        )
+      : await ctx.db.all<NoteRow>(
+          `SELECT * FROM notes WHERE status = 'OUTSTANDING' AND not_after <= ? ORDER BY note_id FOR UPDATE`,
+          cutoff,
+        );
+    let refunded = 0;
+    for (const note of notes) {
+      const res = await ctx.db.run(
+        `UPDATE notes SET status = 'REFUNDED', closed_at = ? WHERE note_id = ? AND status = 'OUTSTANDING'`,
+        now,
+        note.note_id,
+      );
+      if (res.changes === 1) {
+        await postLedger(ctx.db, note.account_id, LedgerKind.NOTE_EXPIRY_REFUND, note.value_paise, `note:${note.note_id}`, now);
+        refunded += note.value_paise;
+      }
+    }
+    return refunded;
+  });
+}
 
                               // --- Status --------------------------------------------------------------------------------------
 

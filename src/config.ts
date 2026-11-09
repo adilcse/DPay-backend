@@ -33,6 +33,7 @@ const EnvSchema = z.object({
   MOCK_BANK_INFINITE_MONEY: bool.default(true),
   MOCK_BANK_AUTO_LOAD: bool.default(true),
 
+
   /** PKCS#8 PEM file with the issuer's P-256 private key (production: an HSM-backed signer). */
   ISSUER_KEY_FILE: z.string().optional(),
   ISSUER_KEY_ID: z.coerce.number().int().min(1).default(1),
