@@ -82,7 +82,16 @@ export class AndroidKeyAttestationVerifier implements KeyAttestationVerifier {
   static loadRoots(pemBundlePath: string): X509Certificate[] {
     const pem = readFileSync(pemBundlePath, 'utf8');
     const blocks = pem.match(/-----BEGIN CERTIFICATE-----[\s\S]+?-----END CERTIFICATE-----/g) ?? [];
-    return blocks.map((b) => new X509Certificate(b));
+    if (blocks.length === 0) {
+      throw new Error(`no certificates found in PEM bundle: ${pemBundlePath}`);
+    }
+    return blocks.map((b, index) => {
+      try {
+        return new X509Certificate(b);
+      } catch (err) {
+        throw new Error(`failed to parse certificate #${index + 1} in ${pemBundlePath}: ${(err as Error).message}`);
+      }
+    });
   }
 
   async verify(input: AttestationInput): Promise<AttestationResult> {

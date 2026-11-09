@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import { describe, it } from 'node:test';
+import { AndroidKeyAttestationVerifier } from '../src/attestation/verifier.ts';
 import * as cbor from '../src/protocol/cbor.ts';
 import { CborError } from '../src/protocol/cbor.ts';
 import { isValidDenominationPlan, planDenominations } from '../src/protocol/denominations.ts';
@@ -140,5 +142,30 @@ describe('handles', () => {
     for (const bad of ['as', '1asha', 'asha..rao', 'asha.', 'Asha', 'asha_rao', 'a'.repeat(31)]) assert.ok(!isValidLocalPart(bad), bad);
     assert.equal(suggestHandle('Asha K. Rao'), 'asha.k.rao');
     assert.equal(suggestHandle('  42 Ravi  '), 'ravi');
+  });
+});
+
+describe('attestation roots loader', () => {
+  it('loads all hardware attestation roots cleanly from secrets bundle', () => {
+    const roots = AndroidKeyAttestationVerifier.loadRoots('./secrets/attestation-roots.pem');
+    assert.equal(roots.length, 5);
+    for (const r of roots) {
+      assert.ok(r.subject);
+      assert.ok(r.verify(r.publicKey));
+    }
+  });
+
+  it('provides descriptive error when certificate contains bad base64 decode', () => {
+    const malformed = '-----BEGIN CERTIFICATE-----\n!invalid-base64!\n-----END CERTIFICATE-----\n';
+    const tmpPath = './secrets/test-bad-cert.tmp';
+    try {
+      fs.writeFileSync(tmpPath, malformed);
+      assert.throws(
+        () => AndroidKeyAttestationVerifier.loadRoots(tmpPath),
+        /failed to parse certificate #1/,
+      );
+    } finally {
+      if (fs.existsSync(tmpPath)) fs.unlinkSync(tmpPath);
+    }
   });
 });
