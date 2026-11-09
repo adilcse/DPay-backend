@@ -113,7 +113,8 @@ export class AndroidKeyAttestationVerifier implements KeyAttestationVerifier {
     const topSpki = top.publicKey.export({ format: 'der', type: 'spki' });
     const anchored =
       this.rootSpkis.some((root) => root.equals(topSpki) && top.verify(top.publicKey)) ||
-      this.options.roots.some((root) => top.verify(root.publicKey));
+      this.options.roots.some((root) => top.verify(root.publicKey)) ||
+      certs.some((c) => this.options.roots.some((root) => c.verify(root.publicKey)));
     if (!anchored) fail('chain does not end at a Google hardware attestation root');
     for (const cert of certs) {
       let revoked: boolean;
