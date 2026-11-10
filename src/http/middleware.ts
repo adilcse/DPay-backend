@@ -1,7 +1,7 @@
 import { timingSafeEqual } from 'node:crypto';
 import type { NextFunction, Request, Response } from 'express';
 import { BankError, BankException } from '../domain/errors.ts';
-import type { Logger } from '../lib/logger.ts';
+import { maskPhone, type Logger } from '../lib/logger.ts';
 import { authenticate, type Session } from '../services/auth.ts';
 import type { ServiceContext } from '../services/context.ts';
 
@@ -38,13 +38,17 @@ export function requireSession(ctx: ServiceContext) {
     };
   }
 
+  /** Request path for logs: no query string, and phone numbers in the path (admin routes) masked. */
+  export const loggedPath = (req: Request): string =>
+    (req.originalUrl ? req.originalUrl.split('?')[0]! : req.path).replace(/\/accounts\/(\d{6,})(?=\/|$)/, (_m, phone: string) => `/accounts/${maskPhone(phone)}`);
+
   export function requestLogger(logger: Logger) {
     return (req: Request, res: Response, next: NextFunction) => {
       const start = process.hrtime.bigint();
       res.on('finish', () => {
         logger.info('request', {
           method: req.method,
-          path: req.originalUrl ? req.originalUrl.split('?')[0] : req.path,
+          path: loggedPath(req),
           status: res.statusCode,
           ms: Number((process.hrtime.bigint() - start) / 1_000_000n),
         });
@@ -57,7 +61,7 @@ export function requireSession(ctx: ServiceContext) {
     return (err: unknown, req: Request, res: Response, _next: NextFunction) => {
       if (err instanceof BankException) {
         logger.warn('bank exception', {
-          path: req.originalUrl ? req.originalUrl.split('?')[0] : req.path,
+          path: loggedPath(req),
           status: err.status,
           code: err.code,
           message: err.message,

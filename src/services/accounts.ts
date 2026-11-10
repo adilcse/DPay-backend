@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { BankError, BankException } from '../domain/errors.ts';
 import { fullHandle, isValidLocalPart, localPart, RESERVED_HANDLES, suggestHandle } from '../protocol/handles.ts';
+import { Limits } from '../domain/limits.ts';
+import { maskPhone } from '../lib/logger.ts';
 import type { Session } from './auth.ts';
 import type { ServiceContext } from './context.ts';
 import { LedgerKind, postLedger } from './ledger.ts';
@@ -37,6 +39,41 @@ export const toProfile = (a: AccountRow): Profile => ({ phone: a.phone, fullName
       const account = await findAccount(ctx, session);
       if (!account) throw new BankException(BankError.ACCOUNT_NOT_REGISTERED, 'complete registration first');
       return account;
+    }
+
+    /** For every route that moves money or changes account state: a frozen account is refused. */
+    export async function requireActiveAccount(ctx: ServiceContext, session: Session): Promise<AccountRow> {
+      const account = await requireAccount(ctx, session);
+      if (account.frozen) throw new BankException(BankError.WALLET_FROZEN);
+      return account;
+    }
+
+    /**
+     * Deletes the phone's sessions (all of them, or all except one device's) from PostgreSQL and the
+     * Redis cache. PostgreSQL first: it is the source of truth, and `authenticate` re-populates the
+     * cache from it.
+     */
+    export async function revokeSessions(ctx: ServiceContext, phone: string, exceptDeviceId?: string): Promise<string[]> {
+      const rows =
+        exceptDeviceId === undefined
+          ? await ctx.db.all<{ token_hash: string }>('SELECT token_hash FROM sessions WHERE phone = ?', phone)
+          : await ctx.db.all<{ token_hash: string }>(
+              'SELECT token_hash FROM sessions WHERE phone = ? AND device_id != ?',
+              phone,
+              exceptDeviceId,
+            );
+      for (const row of rows) {
+        await ctx.db.run('DELETE FROM sessions WHERE token_hash = ?', row.token_hash);
+      }
+      const hashes = rows.map((r) => r.token_hash);
+      await dropCachedSessions(ctx, hashes);
+      return hashes;
+    }
+
+    export async function dropCachedSessions(ctx: ServiceContext, tokenHashes: readonly string[]): Promise<void> {
+      for (const hash of tokenHashes) {
+        await ctx.redis.deleteSession(hash);
+      }
     }
 
       async function handleTaken(ctx: ServiceContext, local: string): Promise<boolean> {
@@ -95,7 +132,7 @@ export const toProfile = (a: AccountRow): Profile => ({ phone: a.phone, fullName
               }
 
                 export async function updateProfile(ctx: ServiceContext, session: Session, fullName: string, email: string | null): Promise<Profile> {
-                  const account = await requireAccount(ctx, session);
+                  const account = await requireActiveAccount(ctx, session);
                   await ctx.db.run('UPDATE accounts SET full_name = ?, email = ?, updated_at = ? WHERE id = ?', fullName, email, ctx.clock(), account.id);
                   return toProfile({ ...account, full_name: fullName, email });
                 }
@@ -107,25 +144,29 @@ export const toProfile = (a: AccountRow): Profile => ({ phone: a.phone, fullName
                  */
                   export async function moveToThisDevice(ctx: ServiceContext, session: Session): Promise<void> {
                     const now = ctx.clock();
-                        await ctx.db.transaction(async () => {
-                          const account = await requireAccount(ctx, session);
-                          await ctx.db.run(
-                            `UPDATE wallets SET status = 'RETIRED', retired_at = ? WHERE account_id = ? AND status = 'ACTIVE'`,
-                            now,
-                            account.id,
-                          );
-                          await ctx.db.run('UPDATE accounts SET bound_device_id = ?, updated_at = ? WHERE id = ?', session.deviceId, now, account.id);
 
-                          // Invalidate old sessions in Redis cache
-                          const oldSessions = await ctx.db.all<{ token_hash: string }>(
-                            'SELECT token_hash FROM sessions WHERE phone = ? AND device_id != ?',
-                            account.phone,
-                            session.deviceId,
-                          );
-                          for (const s of oldSessions) {
-                            await ctx.redis.deleteSession(s.token_hash);
-                          }
-
-                          await ctx.db.run('DELETE FROM sessions WHERE phone = ? AND device_id != ?', account.phone, session.deviceId);
-                        });
+                    // Step-up: rebinding the account is the most powerful thing a session can do, so it is
+                    // only allowed right after an OTP login, not with a long-lived (possibly stolen) token.
+                    const current = await ctx.db.get<{ created_at: number }>(
+                      'SELECT created_at FROM sessions WHERE token_hash = ?',
+                      session.tokenHash,
+                    );
+                    if (!current || now - current.created_at > Limits.DEVICE_MOVE_MAX_SESSION_AGE_SECONDS) {
+                      throw new BankException(BankError.NOT_AUTHENTICATED, 'sign in again to move your account to this device');
                     }
+
+                    let revoked: string[] = [];
+                    await ctx.db.transaction(async () => {
+                      const account = await requireActiveAccount(ctx, session);
+                      await ctx.db.run(
+                        `UPDATE wallets SET status = 'RETIRED', retired_at = ? WHERE account_id = ? AND status = 'ACTIVE'`,
+                        now,
+                        account.id,
+                      );
+                      await ctx.db.run('UPDATE accounts SET bound_device_id = ?, updated_at = ? WHERE id = ?', session.deviceId, now, account.id);
+                      revoked = await revokeSessions(ctx, account.phone, session.deviceId);
+                    });
+                    // Again after the commit: a request racing the transaction may have re-cached a session.
+                    await dropCachedSessions(ctx, revoked);
+                    ctx.logger.info('account moved to a new device', { phone: maskPhone(session.phone), sessionsRevoked: revoked.length });
+                  }

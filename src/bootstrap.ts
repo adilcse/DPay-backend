@@ -15,6 +15,12 @@ import { createSmsSender } from './services/sms.ts';
     if (issuer.isDemoKey) {
       logger.warn('using the PUBLIC demo issuer key (FakeIssuer); anyone can forge notes. Set ISSUER_KEY_FILE for real money.');
     }
+    if (config.env === 'production' && (config.mockBank.infiniteMoney || config.mockBank.autoLoad)) {
+      logger.warn(
+        'MOCK BANK is on in production: balances are created from nothing (MOCK_BANK_INFINITE_MONEY / MOCK_BANK_AUTO_LOAD). ' +
+          'Acceptable for a proof of concept only; turn both off before real money is involved.',
+      );
+    }
     const attestation =
       config.attestation.mode === 'enforce'
         ? new AndroidKeyAttestationVerifier({

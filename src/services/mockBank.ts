@@ -17,7 +17,8 @@
 
 import { randomUUID } from 'node:crypto';
 import { BankError, BankException } from '../domain/errors.ts';
-import { requireAccount } from './accounts.ts';
+import { maskPhone } from '../lib/logger.ts';
+import { requireAccount, requireActiveAccount } from './accounts.ts';
 import type { Session } from './auth.ts';
 import type { ServiceContext } from './context.ts';
 import { LedgerKind, postLedger } from './ledger.ts';
@@ -111,7 +112,7 @@ export async function loadMoney(
     throw new BankException(BankError.INVALID_REQUEST, 'amount must be a positive integer in paise');
   }
 
-  const account = await requireAccount(ctx, session);
+  const account = await requireActiveAccount(ctx, session);
   const now = ctx.clock();
   const bankAccount = await getOrCreateBankAccount(ctx, account.id, account.phone, account.handle);
   const bankRef = clientRef ?? `MB-LOAD-${ctx.random(8).toString('hex').toUpperCase()}`;
@@ -137,7 +138,7 @@ export async function loadMoney(
     );
 
     ctx.logger.info('money loaded from mock bank', {
-      phone: account.phone,
+      phone: maskPhone(account.phone),
       amountPaise,
       newBalance,
       bankRef,
@@ -172,7 +173,7 @@ export async function withdrawToBank(
     throw new BankException(BankError.INVALID_REQUEST, 'amount must be a positive integer in paise');
   }
 
-  const account = await requireAccount(ctx, session);
+  const account = await requireActiveAccount(ctx, session);
   const now = ctx.clock();
   const bankAccount = await getOrCreateBankAccount(ctx, account.id, account.phone, account.handle);
   const bankRef = clientRef ?? `MB-WDR-${ctx.random(8).toString('hex').toUpperCase()}`;
@@ -203,7 +204,7 @@ export async function withdrawToBank(
     );
 
     ctx.logger.info('settlement withdrawn to mock bank', {
-      phone: account.phone,
+      phone: maskPhone(account.phone),
       amountPaise,
       remainingBalance,
       bankRef,

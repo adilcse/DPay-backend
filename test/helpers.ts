@@ -49,8 +49,9 @@ export interface TestBank {
       NODE_ENV: 'test',
       LOG_LEVEL: 'silent',
       ADMIN_API_KEY: 'test-admin-key-0123456789abcdef',
-      DATABASE_URL: 'postgres://postgres:postgres@localhost:5432/dpay_test_db',
-      REDIS_URL: 'redis://localhost:6379',
+      DATABASE_URL: process.env.TEST_DATABASE_URL ?? 'postgres://postgres:postgres@localhost:5432/dpay_test_db',
+      // Logical database 15, not 0: the suite calls FLUSHDB, which must never hit a development server's sessions.
+      REDIS_URL: process.env.TEST_REDIS_URL ?? 'redis://localhost:6379/15',
       MOCK_BANK_AUTO_LOAD: 'false',
       ...env,
     });

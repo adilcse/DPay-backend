@@ -9,6 +9,14 @@ export const Limits = {
   OTP_MAX_ATTEMPTS: 5,
   /** OTP sends per phone per hour. */
   OTP_MAX_SENDS_PER_HOUR: 5,
+  /** Wrong codes per phone per hour, counted across codes (a resend does not reset it). */
+  OTP_MAX_FAILURES_PER_HOUR: 10,
+  /** Concurrent sessions per phone; the oldest are dropped when a new login exceeds this. */
+  MAX_SESSIONS_PER_PHONE: 5,
+  /** Moving the account to a new device needs a session that was created (OTP verified) this recently. */
+  DEVICE_MOVE_MAX_SESSION_AGE_SECONDS: 15 * 60,
+  /** Sessions are cached in Redis for at most this long before PostgreSQL is consulted again. */
+  SESSION_CACHE_TTL_SECONDS: 5 * 60,
   CHALLENGE_TTL_SECONDS: 10 * 60,
   WALLET_CERT_LIFETIME_SECONDS: 365 * 86_400,
   CLOCK_SKEW_SECONDS: 300,

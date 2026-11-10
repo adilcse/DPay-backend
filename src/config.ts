@@ -42,6 +42,8 @@ const EnvSchema = z.object({
   OTP_SECRET: z.string().min(32).optional(),
   /** Return the OTP in the response (`debugCode`), like the app's FakeBank. Never in production. */
   EXPOSE_DEBUG_OTP: bool.optional(),
+  /** Serve Swagger UI and the OpenAPI spec at /docs. Default: on outside production, off in production. */
+  EXPOSE_API_DOCS: bool.optional(),
   SMS_PROVIDER: z.enum(['console', 'webhook', 'whatsapp']).optional(),
   SMS_WEBHOOK_URL: z.url().optional(),
   SMS_WEBHOOK_TOKEN: z.string().optional(),
@@ -96,6 +98,7 @@ export interface Config {
   readonly issuerKeyId: number;
   readonly otpSecret: string;
   readonly exposeDebugOtp: boolean;
+  readonly exposeApiDocs: boolean;
   readonly sms: {
     readonly provider: 'console' | 'webhook' | 'whatsapp';
     readonly webhookUrl: string | undefined;
@@ -177,6 +180,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     issuerKeyId: e.ISSUER_KEY_ID,
     otpSecret: e.OTP_SECRET ?? (production ? '' : 'dev-only-otp-secret-not-for-production-use'),
     exposeDebugOtp: e.EXPOSE_DEBUG_OTP ?? !production,
+    exposeApiDocs: e.EXPOSE_API_DOCS ?? !production,
     sms: {
       provider: e.SMS_PROVIDER ?? (e.WHATSAPP_ACCESS_TOKEN && e.WHATSAPP_PHONE_NUMBER_ID ? 'whatsapp' : 'console'),
       webhookUrl: e.SMS_WEBHOOK_URL,

@@ -44,6 +44,13 @@ const HOUR = 3600;
 
 export const hashToken = (token: string): string => createHash('sha256').update(token, 'utf8').digest('hex');
 
+/**
+ * Redis is only a short-lived cache of the sessions table. Keeping the lifetime short bounds how
+ * long a session revoked in PostgreSQL (freeze, device move, logout) could survive in the cache.
+ */
+const sessionCacheTtl = (remainingSeconds: number): number =>
+  Math.max(1, Math.min(remainingSeconds, Limits.SESSION_CACHE_TTL_SECONDS));
+
 function otpHash(ctx: ServiceContext, phone: string, code: string): Buffer {
   return createHmac('sha256', ctx.config.otpSecret).update(`${phone}:${code}`, 'utf8').digest();
 }
@@ -51,6 +58,9 @@ function otpHash(ctx: ServiceContext, phone: string, code: string): Buffer {
 export async function requestOtp(ctx: ServiceContext, phone: string): Promise<OtpChallenge> {
   if (!PHONE_PATTERN.test(phone)) throw new BankException(BankError.INVALID_PHONE);
   const now = ctx.clock();
+  if ((await ctx.redis.otpFailures(phone)) >= Limits.OTP_MAX_FAILURES_PER_HOUR) {
+    throw new BankException(BankError.OTP_LOCKED, 'too many wrong codes, try again later');
+  }
   const code = randomInt(0, 1_000_000).toString().padStart(6, '0');
 
     const issued = await ctx.db.transaction(async () => {
@@ -126,9 +136,16 @@ export async function requestOtp(ctx: ServiceContext, phone: string): Promise<Ot
       if (!PHONE_PATTERN.test(phone)) throw new BankException(BankError.INVALID_PHONE);
       const now = ctx.clock();
 
+      // Per-phone lockout across codes: requesting a new code resets the per-code counter below,
+      // so without this an attacker gets OTP_MAX_ATTEMPTS guesses for every code sent.
+      if ((await ctx.redis.otpFailures(phone)) >= Limits.OTP_MAX_FAILURES_PER_HOUR) {
+        throw new BankException(BankError.OTP_LOCKED, 'too many wrong codes, try again later');
+      }
+
       // Failed attempts must be committed, so the transaction returns the failure instead of throwing.
         const outcome = await ctx.db.transaction(async (): Promise<BankError | OtpResult> => {
-          const otp = await ctx.db.get<OtpRow>('SELECT * FROM otps WHERE phone = ?', phone);
+          // Row lock: concurrent guesses are serialised, so each one sees the previous attempt count.
+          const otp = await ctx.db.get<OtpRow>('SELECT * FROM otps WHERE phone = ? FOR UPDATE', phone);
           if (!otp) return BankError.OTP_EXPIRED;
           if (otp.attempts >= Limits.OTP_MAX_ATTEMPTS) return BankError.OTP_LOCKED;
           if (now > otp.expires_at) {
@@ -161,12 +178,22 @@ export async function requestOtp(ctx: ServiceContext, phone: string): Promise<Ot
               now,
             );
 
-          // Cache session in Redis for sub-millisecond authentication
-          await ctx.redis.setSession(
+          // Cap concurrent sessions: drop expired ones and everything beyond the newest few.
+          const others = await ctx.db.all<{ token_hash: string; expires_at: number }>(
+            'SELECT token_hash, expires_at FROM sessions WHERE phone = ? AND token_hash <> ? ORDER BY created_at DESC, last_seen_at DESC',
+            phone,
             tokenHash,
-            { phone, deviceId, expiresAt, lastSeenAt: now },
-            ctx.config.sessionTtlSeconds,
           );
+          const live = others.filter((s) => s.expires_at > now);
+          const keep = new Set(live.slice(0, Limits.MAX_SESSIONS_PER_PHONE - 1).map((s) => s.token_hash));
+          for (const old of others) {
+            if (keep.has(old.token_hash)) continue;
+            await ctx.db.run('DELETE FROM sessions WHERE token_hash = ?', old.token_hash);
+            await ctx.redis.deleteSession(old.token_hash);
+          }
+
+          // Cache session in Redis for sub-millisecond authentication
+          await ctx.redis.setSession(tokenHash, { phone, deviceId, expiresAt, lastSeenAt: now }, sessionCacheTtl(expiresAt - now));
 
           const account = await ctx.db.get<AccountRow>('SELECT * FROM accounts WHERE phone = ?', phone);
           return {
@@ -177,7 +204,16 @@ export async function requestOtp(ctx: ServiceContext, phone: string): Promise<Ot
           };
         });
 
-        if (typeof outcome === 'string') throw new BankException(outcome);
+        if (typeof outcome === 'string') {
+          if (outcome === BankError.INVALID_OTP || outcome === BankError.OTP_LOCKED) {
+            const failures = await ctx.redis.recordOtpFailure(phone, HOUR);
+            if (failures === Limits.OTP_MAX_FAILURES_PER_HOUR) {
+              ctx.logger.warn('otp verification locked for phone', { phone: maskPhone(phone), failures });
+            }
+          }
+          throw new BankException(outcome);
+        }
+        await ctx.redis.clearOtpFailures(phone);
         ctx.logger.info('otp verified', { phone: maskPhone(phone), newUser: outcome.profile === null });
         return outcome;
       }
@@ -195,8 +231,7 @@ export async function requestOtp(ctx: ServiceContext, phone: string): Promise<Ot
               throw new BankException(BankError.NOT_AUTHENTICATED);
             }
             if (now - cached.lastSeenAt > 60) {
-              const remainingTtl = cached.expiresAt - now;
-              await ctx.redis.touchSession(tokenHash, now, remainingTtl);
+              await ctx.redis.touchSession(tokenHash, { ...cached, lastSeenAt: now });
               await ctx.db.run('UPDATE sessions SET last_seen_at = ? WHERE token_hash = ?', now, tokenHash);
             }
             return { tokenHash, phone: cached.phone, deviceId: cached.deviceId, expiresAt: cached.expiresAt };
@@ -214,11 +249,10 @@ export async function requestOtp(ctx: ServiceContext, phone: string): Promise<Ot
           }
 
           // Populate Redis cache
-          const remainingTtl = Math.max(1, row.expires_at - now);
           await ctx.redis.setSession(
             tokenHash,
             { phone: row.phone, deviceId: row.device_id, expiresAt: row.expires_at, lastSeenAt: now },
-            remainingTtl,
+            sessionCacheTtl(row.expires_at - now),
           );
 
           return { tokenHash, phone: row.phone, deviceId: row.device_id, expiresAt: row.expires_at };

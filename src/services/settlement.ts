@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { Limits } from '../domain/limits.ts';
 import { Payment, PaymentBody, ProtocolError, WalletCertificate, WalletLease } from '../protocol/messages.ts';
 import { verifyPayment, type VerifiedPayment } from '../protocol/verifier.ts';
-import { requireAccount } from './accounts.ts';
+import { requireAccount, requireActiveAccount } from './accounts.ts';
 import type { Session } from './auth.ts';
 import { hex, type ServiceContext } from './context.ts';
 import { LedgerKind, postLedger } from './ledger.ts';
@@ -82,7 +82,8 @@ const reject = (paymentId: Buffer | null, code: SettlementRejection, reason?: st
  * are idempotent.
  */
   export async function settle(ctx: ServiceContext, session: Session, upload: SettlementUpload): Promise<SettlementReport> {
-    const account = await requireAccount(ctx, session);
+    // A frozen account cannot collect: its credits wait until the freeze is lifted.
+    const account = await requireActiveAccount(ctx, session);
     const now = ctx.clock();
     const report: SettlementReport = {
       settledReceived: [],
@@ -170,12 +171,11 @@ const reject = (paymentId: Buffer | null, code: SettlementRejection, reason?: st
 
     // Already settled (by either side)? Re-uploads are idempotent.
     const existing = await ctx.db.get<PaymentRow>('SELECT * FROM payments WHERE payment_id = ?', hex(paymentId));
-    if (existing) {
-      if (existing.body_hash === bodyHash) {
-        return { ok: true, paymentId, creditedToUploader: 0, refundedToUploader: 0 };
-      }
-      return reject(paymentId, SettlementRejection.PAYMENT_ID_CONFLICT);
+    if (existing && existing.body_hash === bodyHash) {
+      return { ok: true, paymentId, creditedToUploader: 0, refundedToUploader: 0 };
     }
+    // Same id, different body: keep going. Nothing is proven until the signatures are verified;
+    // the conflict is handled below, inside the transaction, once they are.
 
     try {
       lease = WalletLease.decodeAndVerify(payment.payerLease, ctx.issuer.trustAnchors);
@@ -245,6 +245,23 @@ const reject = (paymentId: Buffer | null, code: SettlementRejection, reason?: st
           if (again.body_hash === bodyHash) {
             return { ok: true, paymentId, creditedToUploader: 0, refundedToUploader: 0 };
           }
+          // Two different, validly signed payments with one payment id. Ids are random, so an honest
+          // wallet never does this: the payer is running modified software to make the second
+          // payment unredeemable. Same response as a double spend, and the evidence is kept.
+          const noteIdHex = noteSpecs[0]?.noteIdHex ?? null;
+          const known = await ctx.db.get(
+            `SELECT 1 AS x FROM fraud_events WHERE kind = 'PAYMENT_ID_REUSE' AND second_payment_id = ? AND detail = ?`,
+            hex(paymentId),
+            bodyHash,
+          );
+          if (!known) {
+            await recordFraud(ctx, 'PAYMENT_ID_REUSE', payerWallet.wallet_id, noteIdHex, hex(paymentId), hex(paymentId), now, bodyHash);
+            await freezePayer(ctx, payerWallet, 'PAYMENT_ID_REUSE', now);
+            ctx.logger.error('payment id reused for a different signed payment', {
+              payerWalletId: payerWallet.wallet_id,
+              paymentId: hex(paymentId),
+            });
+          }
           return reject(paymentId, SettlementRejection.PAYMENT_ID_CONFLICT);
         }
 
@@ -254,16 +271,7 @@ const reject = (paymentId: Buffer | null, code: SettlementRejection, reason?: st
           for (const c of conflicts) {
             await recordFraud(ctx, 'DOUBLE_SPEND', payerWallet.wallet_id, c.note_id, c.payment_id, hex(paymentId), now);
           }
-          await ctx.db.run('UPDATE wallets SET frozen = 1 WHERE wallet_id = ?', payerWallet.wallet_id);
-          await ctx.db.run('UPDATE accounts SET frozen = 1, updated_at = ? WHERE id = ?', now, payerWallet.account_id);
-          await ctx.db.run(
-            'INSERT OR IGNORE INTO blocked_wallets (wallet_id, reason, created_at) VALUES (?, ?, ?)',
-            payerWallet.wallet_id,
-            'DOUBLE_SPEND',
-            now,
-          );
-          // Fast cache in Redis
-          await ctx.redis.addToBlocklist(payerWallet.wallet_id);
+          await freezePayer(ctx, payerWallet, 'DOUBLE_SPEND', now);
 
           ctx.logger.error('double spend detected', { payerWalletId: payerWallet.wallet_id, paymentId: hex(paymentId) });
           if (!ctx.config.guaranteeOfflinePayments) {
@@ -323,22 +331,42 @@ const reject = (paymentId: Buffer | null, code: SettlementRejection, reason?: st
       });
     }
 
+      /**
+       * Freezes the payer's wallet and account and publishes the wallet on the receiver blocklist.
+       * The payer stays signed in: the app has to see WALLET_FROZEN, and the device holder is the
+       * party at fault, so there is nobody to protect by signing them out.
+       */
+      async function freezePayer(ctx: ServiceContext, payerWallet: WalletRow, reason: string, now: number): Promise<void> {
+        await ctx.db.run('UPDATE wallets SET frozen = 1 WHERE wallet_id = ?', payerWallet.wallet_id);
+        await ctx.db.run('UPDATE accounts SET frozen = 1, updated_at = ? WHERE id = ?', now, payerWallet.account_id);
+        await ctx.db.run(
+          'INSERT OR IGNORE INTO blocked_wallets (wallet_id, reason, created_at) VALUES (?, ?, ?)',
+          payerWallet.wallet_id,
+          reason,
+          now,
+        );
+        // Fast cache in Redis
+        await ctx.redis.addToBlocklist(payerWallet.wallet_id);
+      }
+
       async function recordFraud(
         ctx: ServiceContext,
-        kind: 'DOUBLE_SPEND' | 'UNKNOWN_NOTE',
+        kind: 'DOUBLE_SPEND' | 'UNKNOWN_NOTE' | 'PAYMENT_ID_REUSE',
         walletId: string,
-        noteId: string,
+        noteId: string | null,
         firstPaymentId: string | null,
         secondPaymentId: string,
         now: number,
-      ): Promise < void> {
+        detail: string | null = null,
+      ): Promise<void> {
         await ctx.db.run(
-          `INSERT INTO fraud_events (kind, wallet_id, note_id, first_payment_id, second_payment_id, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO fraud_events (kind, wallet_id, note_id, first_payment_id, second_payment_id, detail, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
           kind,
           walletId,
           noteId,
           firstPaymentId,
           secondPaymentId,
+          detail,
           now,
         );
       }

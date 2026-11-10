@@ -71,13 +71,14 @@ export class RedisService {
     }
   }
 
-  async touchSession(tokenHash: string, lastSeenAt: number, remainingTtlSeconds: number): Promise<void> {
+  /**
+   * Updates a cached session in place. `XX` + `KEEPTTL` make this a single atomic command: a
+   * session revoked between the caller's read and this write is not put back, and the entry keeps
+   * its original (short) lifetime so PostgreSQL is re-checked regularly.
+   */
+  async touchSession(tokenHash: string, session: CachedSession): Promise<void> {
     try {
-      const session = await this.getSession(tokenHash);
-      if (session) {
-        session.lastSeenAt = lastSeenAt;
-        await this.setSession(tokenHash, session, Math.max(60, remainingTtlSeconds));
-      }
+      await this.client.set(`session:${tokenHash}`, JSON.stringify(session), 'KEEPTTL', 'XX');
     } catch (e) {
       this.logger.warn('redis touchSession failed', { error: String(e) });
     }
@@ -111,6 +112,39 @@ export class RedisService {
     }
   }
 
+  // --- OTP failure counter (per phone, across codes) --------------------------------------------
+
+  /** Wrong codes entered for this phone in the current window. Fails open: the per-code limit in PostgreSQL still applies. */
+  async otpFailures(phone: string): Promise<number> {
+    try {
+      return Number((await this.client.get(`otpfail:${phone}`)) ?? 0);
+    } catch (e) {
+      this.logger.warn('redis otpFailures failed', { error: String(e) });
+      return 0;
+    }
+  }
+
+  /** Counts one wrong code. The window starts at the first failure and is not extended by later ones. */
+  async recordOtpFailure(phone: string, windowSeconds: number): Promise<number> {
+    try {
+      const key = `otpfail:${phone}`;
+      const count = await this.client.incr(key);
+      if (count === 1 || (await this.client.ttl(key)) < 0) await this.client.expire(key, windowSeconds);
+      return count;
+    } catch (e) {
+      this.logger.warn('redis recordOtpFailure failed', { error: String(e) });
+      return 0;
+    }
+  }
+
+  async clearOtpFailures(phone: string): Promise<void> {
+    try {
+      await this.client.del(`otpfail:${phone}`);
+    } catch (e) {
+      this.logger.warn('redis clearOtpFailures failed', { error: String(e) });
+    }
+  }
+
   // --- Challenges --------------------------------------------------------------------------------
 
   async setChallenge(challengeHex: string, accountId: string, ttlSeconds: number): Promise<void> {
@@ -134,66 +168,11 @@ export class RedisService {
 
   // --- Blocklist ---------------------------------------------------------------------------------
 
-  async isWalletBlocked(walletIdHex: string): Promise<boolean> {
-    try {
-      const isMember = await this.client.sismember('blocked_wallets', walletIdHex);
-      return isMember === 1;
-    } catch {
-      return false;
-    }
-  }
-
   async addToBlocklist(walletIdHex: string): Promise<void> {
     try {
       await this.client.sadd('blocked_wallets', walletIdHex);
     } catch (e) {
       this.logger.warn('redis addToBlocklist failed', { error: String(e) });
-    }
-  }
-
-  async syncBlocklist(walletIdHexes: string[]): Promise<void> {
-    try {
-      if (walletIdHexes.length > 0) {
-        await this.client.sadd('blocked_wallets', ...walletIdHexes);
-      }
-    } catch (e) {
-      this.logger.warn('redis syncBlocklist failed', { error: String(e) });
-    }
-  }
-
-  // --- Distributed Lock / Mutex ------------------------------------------------------------------
-
-  async withLock<T>(resource: string, ttlMs: number, fn: () => Promise<T>): Promise<T> {
-    const lockKey = `lock:${resource}`;
-    const token = Math.random().toString(36).slice(2);
-    let acquired = false;
-    try {
-      const res = await this.client.set(lockKey, token, 'PX', ttlMs, 'NX');
-      acquired = res === 'OK';
-    } catch (e) {
-      this.logger.error('failed to acquire lock due to redis error', { resource, error: String(e) });
-      acquired = false; // fail-closed for financial integrity
-    }
-
-    if (!acquired) {
-      throw new Error(`could not acquire lock for ${resource}`);
-    }
-
-    try {
-      return await fn();
-    } finally {
-      try {
-        const unlockScript = `
-          if redis.call("get", KEYS[1]) == ARGV[1] then
-            return redis.call("del", KEYS[1])
-          else
-            return 0
-          end
-        `;
-        await this.client.eval(unlockScript, 1, lockKey, token);
-      } catch (e) {
-        this.logger.warn('redis unlock error', { resource, error: String(e) });
-      }
     }
   }
 

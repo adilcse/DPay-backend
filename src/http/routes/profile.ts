@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import { rateLimit } from 'express-rate-limit';
 import { z } from 'zod';
 import * as accounts from '../../services/accounts.ts';
 import type { ServiceContext } from '../../services/context.ts';
@@ -10,6 +11,17 @@ const Update = z.object({ fullName: fullNameSchema, email: emailSchema });
 
 export function handleRoutes(ctx: ServiceContext): Router {
   const router = Router();
+  // Unauthenticated lookups against the accounts table: enough for sign-up, too slow to enumerate handles.
+  router.use(
+    rateLimit({
+      windowMs: 15 * 60 * 1000,
+      limit: ctx.config.env === 'test' ? 10_000 : 60,
+      standardHeaders: 'draft-8',
+      legacyHeaders: false,
+      validate: { trustProxy: false, xForwardedForHeader: false },
+      message: { error: { code: 'RATE_LIMITED', message: 'too many requests' } },
+    }),
+  );
 
   /** BankApi.isHandleAvailable: `?handle=asha.rao` or `asha.rao@dpay`. */
     router.get('/availability', async (req, res) => {

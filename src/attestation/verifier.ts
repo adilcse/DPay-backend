@@ -118,6 +118,15 @@ export class AndroidKeyAttestationVerifier implements KeyAttestationVerifier {
         fail(`certificate ${i + 1} is outside its validity period`);
       }
     }
+    // Every certificate above the leaf must be a CA and must not itself be an attestation
+    // certificate. Without this, a genuine attested (non-CA) app key could sign a forged "leaf"
+    // carrying any key description it likes, and the chain would still reach a Google root.
+    for (let i = 1; i < certs.length; i++) {
+      if (!certs[i]!.ca) fail(`certificate ${i} is not a CA`);
+      if (findExtension(input.chain[i]!, KEY_DESCRIPTION_OID)) {
+        fail(`certificate ${i} is an attestation certificate, not a CA`);
+      }
+    }
     const top = certs[certs.length - 1]!;
     const topSpki = top.publicKey.export({ format: 'der', type: 'spki' });
     const anchored =
@@ -169,8 +178,14 @@ export class AndroidKeyAttestationVerifier implements KeyAttestationVerifier {
 
     // 5. Our app, signed with our release key.
     const appId = sw.attestationApplicationId() ?? hw.attestationApplicationId() ?? fail('missing attestation application id');
-    if (!appId.packageNames.includes(this.options.packageName)) fail('wrong package name');
-    if (!appId.signatureDigests.some((d) => this.options.signingCertDigests.includes(d))) fail('wrong app signing certificate');
+    if (!appId.packageNames.includes(this.options.packageName)) {
+      fail(`wrong package name: expected '${this.options.packageName}', got [${appId.packageNames.join(', ')}]`);
+    }
+    if (!appId.signatureDigests.some((d) => this.options.signingCertDigests.includes(d))) {
+      fail(
+        `wrong app signing certificate: expected [${this.options.signingCertDigests.join(', ')}], got [${appId.signatureDigests.join(', ')}]`,
+      );
+    }
 
     // 6. Key properties: EC P-256, SIGN only, user auth required, unlocked device required.
     if (hw.int(AuthTag.ALGORITHM) !== KM_ALGORITHM_EC) fail('not an EC key');

@@ -7,9 +7,8 @@ module.exports = {
       watch: false,
       autorestart: true,
       max_memory_restart: '1G',
-      env: {
-        NODE_ENV: 'development',
-      },
+      // NODE_ENV is deliberately not set here: it comes from .env. Forcing "development" switched off
+      // the production start-up checks (attestation, issuer key, debug OTP) without anyone noticing.
     },
   ],
 };

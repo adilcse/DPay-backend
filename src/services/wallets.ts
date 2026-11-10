@@ -84,6 +84,21 @@ function requireBoundDevice(account: AccountRow, session: Session): void {
       return { account, wallet };
     }
 
+    /**
+     * Serialises note, lease and wallet issuance per account for the rest of the current transaction.
+     * Without it two concurrent loads both read the same outstanding total and together exceed the
+     * offline limit, and two lease refreshes can sign the same sequence number. An advisory lock (not
+     * a row lock) so it cannot deadlock with settlement, which locks notes before accounts.
+     */
+    async function lockIssuance(ctx: ServiceContext, accountId: string): Promise<void> {
+      await ctx.db.get('SELECT pg_advisory_xact_lock(hashtext(?)) AS locked', `dpay:issuance:${accountId}`);
+    }
+
+    /** What the client is told when attestation fails: the reason in development, nothing specific in production. */
+    function attestationFailure(ctx: ServiceContext, e: AttestationError): BankException {
+      return new BankException(BankError.ATTESTATION_FAILED, ctx.config.env === 'production' ? 'device attestation failed' : e.message);
+    }
+
     // --- Challenges ----------------------------------------------------------------------------------
 
     /** Fresh single-use attestation challenge for key generation. */
@@ -141,7 +156,7 @@ function requireBoundDevice(account: AccountRow, session: Session): void {
               } catch (e) {
                 if (e instanceof AttestationError) {
                   ctx.logger.warn('attestation rejected', { kind, reason: e.message });
-                  throw new BankException(BankError.ATTESTATION_FAILED, e.message);
+                  throw attestationFailure(ctx, e);
                 }
                 throw e;
               }
@@ -171,7 +186,10 @@ function requireBoundDevice(account: AccountRow, session: Session): void {
               try {
                 integrity = await ctx.integrity.verify(integrityToken, integrityRequestHash(challenge, identity.publicKey));
               } catch (e) {
-                if (e instanceof AttestationError) throw new BankException(BankError.ATTESTATION_FAILED, e.message);
+                if (e instanceof AttestationError) {
+                  ctx.logger.warn('play integrity rejected', { reason: e.message });
+                  throw attestationFailure(ctx, e);
+                }
                 throw e;
               }
               const offlineLimit =
@@ -179,6 +197,7 @@ function requireBoundDevice(account: AccountRow, session: Session): void {
 
               const now = ctx.clock();
                 return await ctx.db.transaction(async () => {
+                  await lockIssuance(ctx, account.id);
                   const fresh = await requireAccount(ctx, session);
                   requireBoundDevice(fresh, session);
                     if (await ctx.db.get('SELECT 1 AS x FROM wallets WHERE wallet_key = ?', hex(identity.publicKey))) {
@@ -259,6 +278,7 @@ export async function issueNotes(
 
                     const now = ctx.clock();
                       return await ctx.db.transaction(async () => {
+                        await lockIssuance(ctx, account.id);
                         const { account: fresh, wallet } = await requireActiveWallet(ctx, session);
                         await refundExpiredNotes(ctx, now, fresh.id);
 
@@ -360,7 +380,9 @@ export async function issueNotes(
                         /** Issues a new 5-day wallet lease plus the outstanding note ids it covers. Refused to frozen or moved wallets. */
                           export async function refreshLease(ctx: ServiceContext, session: Session): Promise<LeaseRefresh> {
                             const now = ctx.clock();
+                              const { id: accountId } = await requireAccount(ctx, session);
                               return await ctx.db.transaction(async () => {
+                                await lockIssuance(ctx, accountId);
                                 const { account, wallet } = await requireActiveWallet(ctx, session);
                                 await refundExpiredNotes(ctx, now, account.id);
                                 return await issueLease(ctx, wallet.wallet_id, now);

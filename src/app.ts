@@ -6,7 +6,7 @@ import swaggerUi from 'swagger-ui-express';
 import { openApiSpec, openApiYaml } from './docs/openapi.ts';
 import { BankError, BankException } from './domain/errors.ts';
 import { Limits } from './domain/limits.ts';
-import { errorHandler, requestLogger } from './http/middleware.ts';
+import { errorHandler, requestLogger, requireSession } from './http/middleware.ts';
 import { adminRoutes } from './http/routes/admin.ts';
 import { authRoutes } from './http/routes/auth.ts';
 import { bankRoutes } from './http/routes/bank.ts';
@@ -41,31 +41,44 @@ export function createApp(ctx: ServiceContext): Express {
       message: { error: { code: BankError.RATE_LIMITED, message: 'too many requests' } },
     }),
   );
+  // Body size: only the routes that carry certificates or payments need megabytes, and those all
+  // require a session. Everything else (including every unauthenticated route) gets a small limit,
+  // so an anonymous caller cannot make the server buffer and parse large JSON bodies.
   // Settlement uploads: up to 200 payments of a few KB each, base64 encoded.
-  app.use(express.json({ limit: `${Math.ceil((Limits.MAX_SETTLEMENT_ITEMS * 5 * 1024 * 4) / 3 / 1024 / 1024) + 1}mb` }));
-
-  // Swagger Documentation & OpenAPI Endpoints
-  app.get('/docs/openapi.json', (_req, res) => {
-    res.setHeader('Content-Type', 'application/json');
-    res.send(JSON.stringify(openApiSpec, null, 2));
+  const largeJson = express.json({ limit: `${Math.ceil((Limits.MAX_SETTLEMENT_ITEMS * 5 * 1024 * 4) / 3 / 1024 / 1024) + 1}mb` });
+  const smallJson = express.json({ limit: '16kb' });
+  const LARGE_BODY_ROUTES = new Set(['/v1/settlement', '/v1/wallet/certificate', '/v1/wallet/notes']);
+  const session = requireSession(ctx);
+  app.use((req, res, next) => {
+    if (!LARGE_BODY_ROUTES.has(req.path.replace(/\/+$/, ''))) return smallJson(req, res, next);
+    // Authenticate before reading a large body.
+    void session(req, res, (err?: unknown) => (err ? next(err) : largeJson(req, res, next)));
   });
 
-  app.get('/docs/openapi.yaml', (_req, res) => {
-    res.setHeader('Content-Type', 'text/yaml; charset=utf-8');
-    res.send(openApiYaml);
-  });
+  // Swagger Documentation & OpenAPI Endpoints: a full map of the API, so off by default in production.
+  if (ctx.config.exposeApiDocs) {
+    app.get('/docs/openapi.json', (_req, res) => {
+      res.setHeader('Content-Type', 'application/json');
+      res.send(JSON.stringify(openApiSpec, null, 2));
+    });
 
-  app.use(
-    '/docs',
-    swaggerUi.serve,
-    swaggerUi.setup(openApiSpec, {
-      customSiteTitle: 'DPay API Documentation (Swagger)',
-      customCss: '.swagger-ui .topbar { display: none }',
-    }),
-  );
-  app.get('/api-docs', (_req, res) => {
-    res.redirect('/docs');
-  });
+    app.get('/docs/openapi.yaml', (_req, res) => {
+      res.setHeader('Content-Type', 'text/yaml; charset=utf-8');
+      res.send(openApiYaml);
+    });
+
+    app.use(
+      '/docs',
+      swaggerUi.serve,
+      swaggerUi.setup(openApiSpec, {
+        customSiteTitle: 'DPay API Documentation (Swagger)',
+        customCss: '.swagger-ui .topbar { display: none }',
+      }),
+    );
+    app.get('/api-docs', (_req, res) => {
+      res.redirect('/docs');
+    });
+  }
 
   /** Liveness probe: returns 200 if the HTTP process is running. */
   app.get('/health', (_req, res) => {

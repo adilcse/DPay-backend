@@ -12,7 +12,7 @@
     "build": "tsc -p tsconfig.build.json",
     "start": "node --disable-warning=ExperimentalWarning --env-file-if-exists=.env dist/index.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "node --experimental-strip-types --disable-warning=ExperimentalWarning --test test/*.test.ts",
+    "test": "node --experimental-strip-types --disable-warning=ExperimentalWarning --test --test-concurrency=1 test/*.test.ts",
     "gen:issuer-key": "node --experimental-strip-types --disable-warning=ExperimentalWarning scripts/gen-issuer-key.ts"
   },
   "dependencies": {

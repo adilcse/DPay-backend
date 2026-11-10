@@ -400,6 +400,9 @@ describe('auth & profile', () => {
 
       const freeze = await bank.request('POST', '/v1/admin/accounts/9876543210/freeze', { headers: { 'x-admin-key': 'test-admin-key-0123456789abcdef' } });
       assert.equal(freeze.body.frozen, true);
+      // Freezing signs the account out everywhere; after a fresh login it is still frozen.
+      assert.equal((await asha.refreshLease()).body.error.code, 'NOT_AUTHENTICATED');
+      await asha.login();
       assert.equal((await asha.refreshLease()).body.error.code, 'WALLET_FROZEN');
     });
 
