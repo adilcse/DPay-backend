@@ -199,9 +199,26 @@ export class AndroidKeyAttestationVerifier implements KeyAttestationVerifier {
     // 7. Note keys must be single use.
     let usageLimitHardwareEnforced = true;
     if (input.kind === 'note') {
-      if (hw.int(AuthTag.USAGE_COUNT_LIMIT) === 1) usageLimitHardwareEnforced = true;
-      else if (sw.int(AuthTag.USAGE_COUNT_LIMIT) === 1) usageLimitHardwareEnforced = false;
-      else fail('note key is not single use (usageCountLimit != 1)');
+      const hwLimit = hw.int(AuthTag.USAGE_COUNT_LIMIT);
+      const swLimit = sw.int(AuthTag.USAGE_COUNT_LIMIT);
+
+      if (hwLimit === 1) {
+        usageLimitHardwareEnforced = true;
+      } else if (hwLimit !== undefined) {
+        fail(`note key is not single use (hardware usageCountLimit = ${hwLimit})`);
+      } else if (swLimit === 1) {
+        usageLimitHardwareEnforced = false;
+      } else if (swLimit !== undefined) {
+        fail(`note key is not single use (software usageCountLimit = ${swLimit})`);
+      } else {
+        // Neither hardware nor software authorization list contains USAGE_COUNT_LIMIT (tag 405).
+        // On devices with Keymaster 4.x HAL or KeyMint without hardware single-use support
+        // (including most non-Pixel phones, or StrongBox on some models), km_compat filters out
+        // USAGE_COUNT_LIMIT so the HAL never receives it. Android Keystore2 enforces maxUsageCount=1
+        // in system software, but cannot modify the hardware-signed attestation record.
+        // Treat as software-enforced single use (reduced offline limit applied by the bank).
+        usageLimitHardwareEnforced = false;
+      }
     }
 
     return {

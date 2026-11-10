@@ -51,6 +51,7 @@ The **DPay Backend** acts as:
     { name: 'Wallet & Provisioning', description: 'Hardware key attestation, note certificates, and 5-day leases' },
     { name: 'Settlement & Account', description: 'Batch offline payment settlement, transactions, and fraud blocklists' },
     { name: 'Central Bank (Simulator)', description: 'Faked Central Bank (RBI / Interbank Clearing): Infinite money loading and settlement sweeps' },
+    { name: 'Cryptography & Advance DHE', description: 'Advance DHE key exchange and application-layer payload encryption' },
     { name: 'Administration', description: 'Back-office administrative actions, account freezes, and fraud inspection' },
   ],
   paths: {
@@ -107,6 +108,49 @@ The **DPay Backend** acts as:
             content: {
               'application/json': {
                 schema: { $ref: '#/components/schemas/TrustAnchorsResponse' },
+              },
+            },
+          },
+        },
+      },
+    },
+    '/v1/crypto/handshake': {
+      post: {
+        tags: ['Cryptography & Advance DHE'],
+        summary: 'Advance DHE Key Exchange Handshake',
+        description: 'Performs 2-way signed Ephemeral Diffie-Hellman (ECDHE) key exchange for mutual session authentication and PFS.',
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['clientEphemeralPublicKey', 'clientNonce', 'timestamp'],
+                properties: {
+                  clientEphemeralPublicKey: { type: 'string', description: 'Base64 compressed P-256 public key (33 bytes)' },
+                  clientNonce: { type: 'string', description: 'Base64 16-byte nonce' },
+                  timestamp: { type: 'integer', description: 'UNIX epoch seconds' },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          '200': {
+            description: 'Handshake completed successfully',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    channelId: { type: 'string' },
+                    serverEphemeralPublicKey: { type: 'string' },
+                    serverNonce: { type: 'string' },
+                    signature: { type: 'string', description: 'P-256 ECDSA DER signature by Issuer key' },
+                    keyId: { type: 'integer' },
+                    expiresAt: { type: 'integer' },
+                  },
+                },
               },
             },
           },

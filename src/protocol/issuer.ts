@@ -1,4 +1,4 @@
-import { createPrivateKey, createPublicKey, type KeyObject } from 'node:crypto';
+import { createPrivateKey, createPublicKey, diffieHellman, type KeyObject } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import * as P256 from './p256.ts';
 import { SigningDomain } from './p256.ts';
@@ -40,6 +40,14 @@ export class Issuer {
 
   static fromPemFile(path: string, keyId: number, extraTrusted?: ReadonlyMap<number, KeyObject>): Issuer {
     return new Issuer(createPrivateKey(readFileSync(path, 'utf8')), keyId, false, extraTrusted);
+  }
+
+  getPrivateKey(): KeyObject {
+    return this.privateKey;
+  }
+
+  diffieHellman(peerPublicKey: KeyObject): Buffer {
+    return Buffer.from(diffieHellman({ publicKey: peerPublicKey, privateKey: this.privateKey }));
   }
 
   walletCertificate(walletId: Buffer, walletKey: Buffer, displayName: string, notAfter: number): Buffer {

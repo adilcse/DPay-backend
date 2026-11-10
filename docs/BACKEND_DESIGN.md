@@ -334,6 +334,28 @@ stateDiagram-v2
     Expired --> ActiveWallet : Refresh Lease Online
 ```
 
+### 6.4 Application-Layer Payload Encryption & Advance DHE Key Exchange
+To prevent plaintext sniffing, TLS-termination middlebox inspection, reverse-proxy data leakage, and request tampering, client-to-server and server-to-client payloads are encrypted at the application layer using **Advance DHE (ECDH over NIST P-256) + HKDF-SHA256 + AES-256-GCM**:
+- **Advance DHE Key Agreement**:
+  - Client generates a fresh ephemeral EC key pair on NIST P-256 (`prime256v1`).
+  - Client computes the shared secret $Z = \text{ECDH}(e_{priv}, S_{pub})$ against the bank's pinned public key (SPKI / Trust Anchor).
+  - Perfect forward secrecy (PFS) is maintained per request: an attacker compromising client storage later cannot decrypt past recorded network packets.
+- **Key Derivation (HKDF-SHA256, RFC 5869)**:
+  - Salt: `"DPay-v1-ECDHE-Channel"`
+  - `clientKey` (AES-256-GCM, 32 bytes): $\text{HKDF-Expand}(PRK, \text{"DPay-v1-Client-To-Server-AES256GCM"}, 32)$
+  - `serverKey` (AES-256-GCM, 32 bytes): $\text{HKDF-Expand}(PRK, \text{"DPay-v1-Server-To-Client-AES256GCM"}, 32)$
+- **Authenticated Encryption with Associated Data (AEAD)**:
+  - AES-256-GCM with a fresh 12-byte random IV per message and 16-byte authentication tag.
+  - **Request AAD Binding**: `$VERSION:$METHOD:$PATH:$TIMESTAMP:$REQUEST_ID:$EPHEMERAL_PUB_HEX`
+    - Cryptographically prevents cross-endpoint cut-and-paste attacks, HTTP method substitution, and parameter tampering.
+  - **Response AAD Binding**: `$VERSION:response:$STATUS_CODE:$TIMESTAMP:$REQUEST_ID`
+- **Replay & Freshness Protection**:
+  - Replay window: requests with clock skew exceeding $\pm 120\text{ seconds}$ are unconditionally rejected.
+  - Nonce Cache: single-use `requestId` is tracked in Redis (`dpay:replay:<requestId>`) with a 300-second TTL. Duplicate request IDs trigger immediate 400 rejection.
+- **Two-Party Signed DHE Handshake (`/v1/crypto/handshake`)**:
+  - Supports explicit 2-way signed Ephemeral Diffie-Hellman handshake for clients requiring persistent session negotiation.
+  - Server signs `(serverEphemeralPublicKey || clientEphemeralPublicKey || serverNonce || clientNonce || timestamp)` using its Issuer private key, preventing Man-In-The-Middle attacks.
+
 ---
 
 ## 7. Settlement & Double-Spend Resolution

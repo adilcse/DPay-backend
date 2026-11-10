@@ -18,7 +18,7 @@ export interface CachedOtp {
 }
 
 export class RedisService {
-  private readonly client: Redis;
+  readonly client: Redis;
   private readonly logger: Logger;
 
   constructor(redisUrl: string, logger: Logger) {

@@ -7,9 +7,11 @@ import { openApiSpec, openApiYaml } from './docs/openapi.ts';
 import { BankError, BankException } from './domain/errors.ts';
 import { Limits } from './domain/limits.ts';
 import { errorHandler, requestLogger, requireSession } from './http/middleware.ts';
+import { secureChannelMiddleware } from './http/secureChannelMiddleware.ts';
 import { adminRoutes } from './http/routes/admin.ts';
 import { authRoutes } from './http/routes/auth.ts';
 import { bankRoutes } from './http/routes/bank.ts';
+import { cryptoRoutes } from './http/routes/crypto.ts';
 import { deviceRoutes, handleRoutes, profileRoutes } from './http/routes/profile.ts';
 import { settlementRoutes } from './http/routes/settlement.ts';
 import { provisioningRoutes, walletRoutes } from './http/routes/wallet.ts';
@@ -54,6 +56,7 @@ export function createApp(ctx: ServiceContext): Express {
     // Authenticate before reading a large body.
     void session(req, res, (err?: unknown) => (err ? next(err) : largeJson(req, res, next)));
   });
+  app.use(secureChannelMiddleware(ctx));
 
   // Swagger Documentation & OpenAPI Endpoints: a full map of the API, so off by default in production.
   if (ctx.config.exposeApiDocs) {
@@ -115,6 +118,7 @@ export function createApp(ctx: ServiceContext): Express {
   v1.get('/trust-anchors', (_req, res) => {
     res.json({ issuers: ctx.issuer.describeTrustAnchors() });
   });
+  v1.use('/crypto', cryptoRoutes(ctx));
   v1.use('/auth', authRoutes(ctx));
   v1.use('/handles', handleRoutes(ctx));
   v1.use('/profile', profileRoutes(ctx));
