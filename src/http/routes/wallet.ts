@@ -14,8 +14,8 @@ const Certify = z.object({
 
 const IssueNotes = z.object({
   challenge: base64Bytes({ size: 16 }),
-  values: z.array(z.number().int().positive()).min(1).max(16),
-  keys: z.array(keyAttestationSchema).min(1).max(16),
+  values: z.array(z.number().int().positive()).min(1).max(100),
+  keys: z.array(keyAttestationSchema).min(1).max(100),
 });
 
 export function provisioningRoutes(ctx: ServiceContext): Router {

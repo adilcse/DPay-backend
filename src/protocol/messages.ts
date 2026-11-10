@@ -12,7 +12,7 @@ export const ProtocolConstants = {
   VERSION: 1,
   ID_SIZE: 16,
   CHALLENGE_SIZE: 16,
-  MAX_NOTES_PER_PAYMENT: 16,
+  MAX_NOTES_PER_PAYMENT: 100,
   MAX_DISPLAY_NAME_LENGTH: 64,
   /** Tolerated difference between issuer and device clocks when checking expiry. */
   CLOCK_SKEW_SECONDS: 300,

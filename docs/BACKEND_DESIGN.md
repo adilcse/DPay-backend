@@ -311,9 +311,10 @@ sequenceDiagram
 
 ### 6.2 Denomination Architecture
 The backend enforces whole-rupee offline loading capped at ₹5,000 per wallet. The offline notes must strictly match `DenominationPlanner.plan(total)`:
-- Standard ₹5,000 load decomposes into exactly **15 notes**:
-  `[1000, 1000, 1000, 500, 500, 200, 200, 200, 100, 100, 90, 50, 20, 20, 20]` (in paise: ₹10, ₹5, ₹2, ₹1 sub-notes).
-- Every whole-rupee amount from ₹1 to ₹5,000 can be paid exactly without requiring real-time change generation from the receiver.
+- Standard ₹5,000 load decomposes into strictly standard Indian rupee denominations (₹1, ₹2, ₹5, ₹10, ₹20, ₹50, ₹100, ₹200, ₹500, ₹1000):
+  - Minimal plan: 21 notes (`[1000, 1000, 1000, 500, 500, 200, 200, 200, 100, 100, 50, 50, 20, 20, 20, 20, 10, 5, 2, 2, 1]`)
+  - Change-heavy plan: 22 notes
+- Every whole-rupee amount from ₹1 to ₹5,000 can be paid exactly without gaps, and payments can carry up to 100 notes exchanged via multi-frame animated QR codes.
 
 ### 6.3 Five-Day Leases (`WalletLease`)
 An offline wallet can only sign payments if it possesses a valid lease signed by the bank.

@@ -107,16 +107,23 @@ describe('issuer', () => {
 });
 
 describe('denominations (DenominationPlanner port)', () => {
-  it('plans ₹5,000 as 15 notes (minimal) and 16 notes (change-heavy)', () => {
+  it('plans ₹5,000 as 21 notes (minimal) and 22 notes (change-heavy) using strictly standard denominations', () => {
+    const standardPaise = [1000, 500, 200, 100, 50, 20, 10, 5, 2, 1].map((r) => r * 100);
     const minimal = planDenominations(5_000_00, false);
-    assert.equal(minimal.length, 15);
+    assert.equal(minimal.length, 21);
     assert.equal(minimal.reduce((a, b) => a + b, 0), 5_000_00);
     assert.deepEqual(minimal, [...minimal].sort((a, b) => b - a));
+    for (const note of minimal) {
+      assert.ok(standardPaise.includes(note), `Note ₹${note / 100} is not a valid standard denomination`);
+    }
 
     const changeHeavy = planDenominations(5_000_00, true);
-    assert.equal(changeHeavy.length, 16);
+    assert.equal(changeHeavy.length, 22);
     assert.equal(changeHeavy.reduce((a, b) => a + b, 0), 5_000_00);
     assert.deepEqual(changeHeavy, [...changeHeavy].sort((a, b) => b - a));
+    for (const note of changeHeavy) {
+      assert.ok(standardPaise.includes(note), `Note ₹${note / 100} is not a valid standard denomination`);
+    }
 
     assert.equal(isValidDenominationPlan(minimal, 5_000_00), true);
     assert.equal(isValidDenominationPlan(changeHeavy, 5_000_00), true);

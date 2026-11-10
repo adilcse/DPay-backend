@@ -1,7 +1,7 @@
 // Regression tests for the security audit findings (B-02 … B-14).
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { generateKeyPairSync, randomBytes, X509Certificate } from 'node:crypto';
+import { randomBytes, X509Certificate } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -16,7 +16,7 @@ import { b64, createTestBank, paymentIdOf, TestClient } from './helpers.ts';
 const ADMIN = { 'x-admin-key': 'test-admin-key-0123456789abcdef' };
 const START = 25_000_00;
 // A valid ₹500 denomination plan (the same one the API tests load).
-const PLAN_500 = [200_00, 100_00, 90_00, 50_00, 20_00, 20_00, 10_00, 5_00, 2_00, 2_00, 1_00];
+const PLAN_500 = planDenominations(500_00, false);
 
 function hasOpenssl(): boolean {
   try {

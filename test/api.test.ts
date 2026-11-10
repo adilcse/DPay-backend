@@ -98,10 +98,10 @@ describe('auth & profile', () => {
     });
 
     it('issues notes for the exact plan, debits first and covers them with a lease', async () => {
-      const values = [200_00, 100_00, 90_00, 50_00, 20_00, 20_00, 10_00, 5_00, 2_00, 2_00, 1_00];
+      const values = planDenominations(500_00, false);
       const res = await asha.load(values);
       assert.equal(res.status, 201);
-      assert.equal(res.body.noteCertificates.length, 11);
+      assert.equal(res.body.noteCertificates.length, values.length);
       assert.equal(res.body.sequence, 1);
       assert.equal(res.body.notAfter - res.body.issuedAt, 5 * DAY);
       assert.equal(res.body.outstandingValuePaise, 500_00);
@@ -111,20 +111,20 @@ describe('auth & profile', () => {
       assert.equal(status.provisioned, true);
       assert.equal(status.displayName, 'asha@dpay');
       assert.equal(status.remainingLoadCapacityPaise, 4_500_00);
-      assert.equal(status.notes.length, 11);
+      assert.equal(status.notes.length, values.length);
 
       const lease = await asha.refreshLease();
       assert.equal(lease.body.sequence, 2);
-      assert.equal(lease.body.outstandingNoteIds.length, 11);
+      assert.equal(lease.body.outstandingNoteIds.length, values.length);
     });
 
     it('accepts change-heavy plans used by the Android client', async () => {
-      // Android client defaults to changeHeavy = true (12 notes for ₹500)
+      // Android client defaults to changeHeavy = true (15 standard notes for ₹500)
       const changeHeavy = planDenominations(500_00, true);
-      assert.equal(changeHeavy.length, 12);
+      assert.equal(changeHeavy.length, 15);
       const res = await asha.load(changeHeavy);
       assert.equal(res.status, 201);
-      assert.equal(res.body.noteCertificates.length, 12);
+      assert.equal(res.body.noteCertificates.length, 15);
     });
 
     it('rejects wrong denominations, the ₹5,000 cap and insufficient balance', async () => {
@@ -206,7 +206,7 @@ describe('auth & profile', () => {
       ravi = new TestClient(bank, '9123456789');
       await asha.onboard('Asha Rao', 'asha');
       await ravi.onboard('Ravi Kumar', 'ravi');
-      await asha.load([200_00, 100_00, 90_00, 50_00, 20_00, 20_00, 10_00, 5_00, 2_00, 2_00, 1_00]);
+      await asha.load(planDenominations(500_00, false));
     });
 
     it('credits the receiver and refunds change to the payer, once', async () => {
@@ -232,9 +232,9 @@ describe('auth & profile', () => {
       assert.equal(await balance(ravi), START + 95_00);
       assert.equal(await balance(asha), START - 500_00 + 5_00);
 
-      // The spent note drops out of the next lease.
+      // The spent note drops out of the next lease (13 - 1 = 12 notes).
       const lease = await asha.refreshLease();
-      assert.equal(lease.body.outstandingNoteIds.length, 10);
+      assert.equal(lease.body.outstandingNoteIds.length, 12);
       assert.equal(lease.body.outstandingValuePaise, 400_00);
 
       const detail = await ravi.call('GET', `/v1/payments/${Buffer.from(id, 'base64').toString('hex')}`);
