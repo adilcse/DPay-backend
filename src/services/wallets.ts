@@ -58,6 +58,7 @@ export interface LeaseRefresh {
   issuedAt: number;
   notAfter: number;
   outstandingValuePaise: number;
+  offlineLimitPaise: number;
 }
 
 // --- Guards ------------------------------------------------------------------------------------
@@ -276,6 +277,14 @@ export async function issueNotes(
                     for (const key of keys) attestations.push(await verifyAttestation(ctx, key, challenge, 'note'));
                     const allHardwareEnforced = attestations.every((a) => a.usageLimitHardwareEnforced);
 
+                    if (!allHardwareEnforced) {
+                      const activeW = await activeWallet(ctx, account.id);
+                      if (activeW && activeW.offline_limit_paise > ctx.config.reducedOfflineLimitPaise) {
+                        // Single use only enforced by keystore2 (software): lower this wallet's cap for good.
+                        await ctx.db.run('UPDATE wallets SET offline_limit_paise = ? WHERE wallet_id = ?', ctx.config.reducedOfflineLimitPaise, activeW.wallet_id);
+                      }
+                    }
+
                     const now = ctx.clock();
                       return await ctx.db.transaction(async () => {
                         await lockIssuance(ctx, account.id);
@@ -344,7 +353,7 @@ export async function issueNotes(
 
                         const lease = await issueLease(ctx, wallet.wallet_id, now);
                         ctx.logger.info('notes issued', { walletId: wallet.wallet_id, count: keys.length, totalPaise: total });
-                        return { noteCertificates, ...lease };
+                        return { noteCertificates, ...lease, offlineLimitPaise: limit };
                       });
                     }
 
@@ -374,7 +383,7 @@ export async function issueNotes(
                               notAfter,
                               walletId,
                             );
-                          return { lease, outstandingNoteIds, sequence, issuedAt: now, notAfter, outstandingValuePaise };
+                          return { lease, outstandingNoteIds, sequence, issuedAt: now, notAfter, outstandingValuePaise, offlineLimitPaise: wallet.offline_limit_paise };
                         }
 
                         /** Issues a new 5-day wallet lease plus the outstanding note ids it covers. Refused to frozen or moved wallets. */
